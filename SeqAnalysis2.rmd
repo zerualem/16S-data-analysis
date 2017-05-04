@@ -1,0 +1,201 @@
+---
+title: "GSR Sequence Samples Analysis"
+author: "Zerihun A Bekele"
+date: "April 7, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(reshape2)
+```
+
+## Read in the data from Mothur into R and format.
+
+
+```{r }
+OTUs <- read.delim("stability.4.15.17.shared", header = T, stringsAsFactors = F)
+
+#Select only GSR data
+OTUs <- OTUs[1:18,-1]
+rownames(OTUs) <- OTUs[,1]
+#Remove the first column
+OTUs <- OTUs[,-1]
+#Transpose the data
+OTU_t <- data.frame(t(OTUs))
+OTU_t <- OTU_t[-1,]
+
+taxon <- read.delim("cons4.15.17.taxonomy", header = T, stringsAsFactors = F)
+#Extract the Taxonomy column for further clean up
+tax.colum=as.data.frame(as.character(taxon$Taxonomy), stringsAsFactors = F)
+colnames(tax.colum)="Taxon"
+
+#Create an empty matrix to hold the taxon table
+tax.names.mat= matrix(NA,nrow=nrow(taxon),ncol = 12, byrow = T)
+colnames(tax.names.mat)=c("Domain", "Phylum", "Class", "Order", "Family", "Genus", "Domain_ID", "Phylum_ID", "Class_ID", "Order_ID", "Family_ID", "Genus_ID")
+
+# tt is an empty holder for the extracted data during clean up
+tt=c(rep(NA,6))
+
+# clean up the data by removing ";" and "()" characters
+for (i in 1:nrow(tax.colum))
+{
+ tt=unlist(strsplit(as.character(tax.colum[i,]), ";", fixed = T ))
+  for (j in 1:6)
+  {
+  tx=unlist(strsplit(tt[j], "(", fixed = T))
+  tax.names.mat[i,j]=tx[1]
+  tax.names.mat[i,j+6]=tx[2]
+  }
+}
+tax.names.mat=sub(")","",tax.names.mat)
+
+new.taxon.table=as.data.frame(cbind(taxon[,-3],tax.names.mat, make.row.names=F))
+new.taxon.table=new.taxon.table[,-15]
+
+OTU_t <- as.data.frame(cbind(new.taxon.table[,1], OTU_t))
+colnames(OTU_t)[1] <- "OTU"
+rownames(new.taxon.table) <- rownames(OTU_t)
+rownames(tax.names.mat) <- rownames(OTU_t)
+colnames(tax.names.mat) <- colnames(new.taxon.table)[3:14]
+
+#Merge all into one big table
+big.table <- cbind(OTU_t, new.taxon.table[,-1])
+
+#Create OTU and Taxon matrix for Phyloseq input
+otumat <- data.matrix(OTU_t[,-1])
+taxmat <- tax.names.mat[,-c(7:12)]
+
+```
+
+## Simple plots of the data
+
+```{r }
+ggplot(new.taxon.table)+geom_bar(aes(x=Phylum), col="red")+ theme(axis.text.x = element_text(angle = 60, hjust = 1))
+
+plt.data <- big.table[order(-big.table$G0117A),][1:30,]
+#plt.data <- plt.data[,!(colnames(plt.data) %in% c("JD19","JD20","JD21"))]
+colnames(plt.data)[1]<-"OTU.names"
+library(reshape2)
+level="Family"
+plt.data2 <- cbind(plt.data[,2:9], plt.data[,level])
+colnames(plt.data2)[9] <- level
+plt.data3 <- melt(plt.data2, id=level)
+colnames(plt.data3)[2:3] <- c("Sample.no","OTU.count")
+
+colourCount = length(unique(plt.data3$Family))
+library(RColorBrewer)
+getPalette = colorRampPalette(brewer.pal(9, "Set1"))
+
+fam.aftr1 <- ggplot(plt.data3, aes(x=Sample.no, y=OTU.count, fill=Family))+geom_bar(stat="identity", position = "fill")+ theme(axis.text.x = element_text(angle = 60, hjust = 1))+ylab("Relative abundance")
+fam.aftr1 <- fam.aftr1+ theme(legend.title = element_text(size=16, face="bold"))
+fam.aftr1 <- fam.aftr1+ theme(legend.text = element_text(size=12, face="bold"))
+fam.aftr1 <- fam.aftr1 + scale_fill_manual(values = getPalette(colourCount))
+fam.aftr1
+ggsave(fam.aftr1, file = "Family.subset.png", width = 7, height = 8)
+```
+
+## Processor the data in Phyloseq
+
+
+```{r}
+library("phyloseq")
+OTU = otu_table(otumat, taxa_are_rows = TRUE)
+TAX = tax_table(taxmat)
+physeq = phyloseq(OTU, TAX)
+physeq
+
+plot_bar(physeq, fill = "Phylum")
+
+sampledata = sample_data(data.frame(
+  Dates = sample(LETTERS[1:4], size=nsamples(physeq), replace=TRUE),
+  Sampletype =sample_names(physeq),
+  row.names=sample_names(physeq),
+  stringsAsFactors=FALSE
+))
+
+library(tidyverse)
+
+library("ape")
+
+tre.tip=as.character(new.taxon.table$Phylum)
+random_tree = rtree(ntaxa(physeq), rooted=TRUE, tip.label= taxa_names(physeq))
+physeq1 = merge_phyloseq(physeq, random_tree, sampledata)
+myTaxa = names(sort(taxa_sums(physeq1), decreasing = TRUE)[1:20])
+ex1 = prune_taxa(myTaxa, physeq1)
+
+t.tip=sort(phy_tree(ex1)$tip.label)
+ph.otu = subset(new.taxon.table, select=c(OTU, Phylum))
+ph.otu=ph.otu[rownames(ph.otu) %in% t.tip,2]
+ph.otu=as.character(ph.otu)
+
+plot_tree(ex1, color = "Sampletype", label.tips = "Phylum", ladderize = "left", justify = "left" , size = "Abundance")
+
+
+
+```
+
+## Phyloseq filtering the data
+
+```{r}
+
+GPr  = transform_sample_counts(physeq1, function(x) x / sum(x) )
+GPfr = filter_taxa(GPr, function(x) mean(x) > 1e-2, TRUE)
+plot_tree(GPfr, color = "Sampletype", label.tips = "Genus", ladderize = "left", justify = "left" , size = "Abundance")
+
+plot_bar(GPfr, fill = "Genus")
+
+GP.chl = subset_taxa(GPr, Genus=="Candidatus_Brocadiaceae_unclassified")
+plot_bar(GP.chl, fill = "Abundance")
+```
+
+## Distance calculations
+
+
+```{r}
+dist_methods <- unlist(distanceMethodList)
+print(dist_methods)
+
+dist_methods = dist_methods[-which(dist_methods=="ANY")]
+
+plist <- vector("list", length(dist_methods))
+names(plist) = dist_methods
+
+physeq2 <- subset_species(physeq1, Genus != "-1")
+
+i=dist_methods[3]
+
+iDist <- distance(physeq2, method=i)
+# Calculate ordination
+iMDS  <- ordinate(physeq2, "MDS", distance=iDist)
+## Make plot
+# Don't carry over previous plot (if error, p will be blank)
+p <- NULL
+# Create plot, store as temp variable, p
+plot_ordination(physeq2, iMDS, color="Sampletype")
++ ggtitle(paste("MDS using distance method ", i, sep=""))
+
+for( i in dist_methods ){
+    # Calculate distance matrix
+    iDist <- distance(physeq2, method=i)
+    # Calculate ordination
+    iMDS  <- ordinate(physeq2, "MDS", distance=iDist)
+    ## Make plot
+    # Don't carry over previous plot (if error, p will be blank)
+    p <- NULL
+    # Create plot, store as temp variable, p
+    p <- plot_ordination(physeq2, iMDS, color="Sampletype")
+    # Add title to each plot
+    p <- p + ggtitle(paste("MDS using distance method ", i, sep=""))
+    # Save the graphic to file.
+    plist[[i]] = p
+}
+
+
+
+
+````
+
+
+
