@@ -1,0 +1,141 @@
+---
+title: "Sequence Analysis Apr 2018"
+author: "Zerihun Bekele"
+date: "April 23, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(reshape2)
+library(tidyverse)
+library(RColorBrewer)
+```
+## Start reading the raw data
+```{r }
+OTUs <- read.delim("Mothur_Apr2018/stability.opti_mcc.shared", header = T, stringsAsFactors = F)
+sample.name <- OTUs[,2]
+OTU.table <- OTUs[,-c(1:3)]
+rownames(OTU.table) <- sample.name
+#Transpose the data
+OTU.table <- data.frame(t(OTU.table))
+
+taxon <- read.delim("Mothur_Apr2018/stability.cons.taxonomy", header = T, stringsAsFactors = F)
+```
+## Clean up the data
+```{r}
+tax.colum=as.data.frame(as.character(taxon$Taxonomy), stringsAsFactors = F)
+colnames(tax.colum)="Taxon"
+tax.names.mat= matrix(NA,nrow=nrow(taxon),ncol = 12, byrow = T)
+colnames(tax.names.mat)=c("Domain", "Phylum", "Class", "Order", "Family", "Genus", "Domain_ID", "Phylum_ID", "Class_ID", "Order_ID", "Family_ID", "Genus_ID")
+
+# tt is an empty holder for the extracted data during clean up
+tt=c(rep(NA,6))
+
+# clean up the data by removing ";" and "()" characters
+for (i in 1:nrow(tax.colum))
+{
+ tt=unlist(strsplit(as.character(tax.colum[i,]), ";", fixed = T ))
+  for (j in 1:6)
+  {
+  tx=unlist(strsplit(tt[j], "(", fixed = T))
+  tax.names.mat[i,j]=tx[1]
+  tax.names.mat[i,j+6]=tx[2]
+  }
+}
+tax.names.mat=sub(")","",tax.names.mat)
+
+new.taxon.table=as.data.frame(cbind(taxon[,-3],tax.names.mat, make.row.names=F))
+
+new.taxon.table=new.taxon.table[,-15]
+
+OTU.table <- as.data.frame(cbind(new.taxon.table[,1], OTU.table))
+colnames(OTU.table)[1] <- "OTU"
+rownames(new.taxon.table) <- rownames(OTU.table)
+rownames(tax.names.mat) <- rownames(OTU.table)
+colnames(tax.names.mat) <- colnames(new.taxon.table)[3:14]
+
+#Change column names to sample names
+
+samplNames = c("OTU","GS032417A","GS071817B","GS081817A","GS081817B","GS091917A","GS091917B","GS110217A","GS110217B","GS120617A","GS120617B","GE120617A","GS032417B","GS011118A","GS011118B","GS012918A","GS012918B","GS022118A","GS022118B","GS122117A","GS041917A","GS041917B","GS060917A","GS060917B","GS063017A","GS063017B","GS071817A")
+colnames(OTU.table) <- samplNames
+OTU.table <- select(OTU.table,GS032417A,GS032417B,GS041917A:GS071817A,GS071817B:GE120617A,GS011118A:GS122117A)
+OTU.table <- select(OTU.table,GS032417A:GS120617B,GS011118A:GS122117A,GE120617A)
+
+big.table <- cbind(OTU.table, new.taxon.table[,-1])
+otumat <- data.matrix(OTU.table[,-1])
+taxmat <- tax.names.mat[,-c(7:12)]
+
+```
+
+## Simple plots of the data
+
+```{r }
+ggplot(new.taxon.table)+geom_bar(aes(x=Order), col="red")+ theme(axis.text.x = element_text(angle = 60, hjust = 1))
+plt.data <- big.table[order(-big.table$GS032417A),][1:20,]
+
+#ploting for selected sample
+sample.data <- select(big.table, GS032417A,GS071817B, Order)
+#Agregate duplicated rows by summing them
+library(plyr)
+sample.agg <- ddply(sample.data,"Order",numcolwise(sum))
+sample.agg <- sample.agg[order(sample.agg[,2], decreasing = TRUE),]
+sample.agg <- sample.agg %>% mutate(R_abun = 100*GS032417A/sum(GS032417A))
+sample.data2 <- filter(sample.agg, R_abun > 0.2)
+sample.data2$Order <- as.character(sample.data2$Order)
+
+```
+## Produce plot
+
+``` {r }
+#Shortening the names
+sample.data2$Order =sub("unclassified","un",sample.data2$Order)
+
+#+ theme(axis.text.x = element_text(angle = 60, hjust = 1, size=12))
+plt.single <- ggplot(sample.data2,aes(x=reorder(Order, GS032417A), y=R_abun))+
+  geom_bar(stat="identity", width = 0.9, fill="#7F7E7A")+
+  ylab("Rel Abundance")+xlab("Order")+
+  ggtitle("Sample on Jan 17")+
+  geom_text(aes(label=round(R_abun,1)), nudge_y=0.3, vjust=0.5, size=3, colour="#bf0010")+
+  theme(axis.text.y = element_text(size=14))+
+  coord_flip()
+
+#plt.single
+
+ggsave(plt.single, file = "Top0.2.Jan.17.png", width = 10, height = 12)
+
+```
+##Calculate the average for each sample
+
+```{r}
+
+#Generate empty table to hold the avg values
+sampleNames = c("GS032417","GS041917","GS060917","GS063017","GS071817","GS081817","GS091917","GS110217","GS120617","GS01118","GS012918","GS022118","GS122117","GE120617")
+avg.table= as.data.frame(matrix(NA,nrow=nrow(big.table),ncol = length(sampleNames), byrow = T))
+colnames(avg.table)=sampleNames
+
+# Create relative abundance table
+avg.abun.table <- avg.table
+k=ncol(avg.table)-2
+avg.table[,13:14] <- big.table[,25:26]
+avg.abun.table[,13:14] <- 100*avg.table[,13:14]/sum(avg.table[,13:14])
+
+for (n in 1:k)
+  {
+   avg.table[[n]] <- (big.table[[n*2]]+big.table[[n*2+1]])/2
+   
+   #Calculate relative abundance
+   avg.abun.table[[n]] <- 100*avg.table[[n]]/sum(avg.table[[n]])
+}
+
+
+#Merge the avg abundance table with classification columns frmo big table  
+big.table.avg <- cbind(avg.abun.table,big.table[,21:26])
+
+
+```
